@@ -94,7 +94,7 @@ def generate_report(data_3029, data_3023, data_3025):
 
 ※データがないエリアはスキップしてください。絵文字を効果的に使ってください。"""
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     resp = requests.post(url, json=payload, timeout=60)
     resp.raise_for_status()
