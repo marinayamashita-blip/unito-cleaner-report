@@ -63,15 +63,31 @@ def aggregate_by_area(rows):
     return result
 
 
+def slim_3029(rows):
+    return [
+        {
+            "エリア": r.get("エリア"),
+            "都道府県": r.get("都道府県"),
+            "既存採用目安": r.get("既存採用目安"),
+            "新規開業追加": r.get("新規開業追加"),
+            "合計採用目安": r.get("合計採用目安"),
+            "新規物件名": r.get("新規物件名"),
+        }
+        for r in rows
+        if (r.get("合計採用目安") or 0) > 0
+    ]
+
+
 def generate_report(data_3029, data_3023, data_3025):
     today = datetime.now(JST).strftime("%Y年%m月%d日")
     data_3023_agg = aggregate_by_area(data_3023)
+    data_3029_slim = slim_3029(data_3029)
 
     prompt = f"""以下はクリーナー採用予測ダッシュボードのデータです（{today}時点、直近12ヶ月集計）。
 エリアごとの採用予測人数と理由を分析し、採用担当者向けのSlackレポートを作成してください。
 
-【合計採用目安（既存＋新規開業）】
-{json.dumps(data_3029, ensure_ascii=False, indent=2)}
+【合計採用目安（採用必要エリアのみ）】
+{json.dumps(data_3029_slim, ensure_ascii=False, indent=2)}
 
 【エリア別サマリー（直近12ヶ月集計）】
 {json.dumps(data_3023_agg, ensure_ascii=False, indent=2)}
