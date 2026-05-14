@@ -63,36 +63,39 @@ def aggregate_by_area(rows):
     return result
 
 
-def slim_3029(rows):
-    return [
-        {
-            "エリア": r.get("エリア"),
+def build_report_data(data_3029, data_3023_agg, data_3025):
+    cl_by_area = {r["エリア"]: r["現在クリーナー数"] for r in data_3023_agg if r.get("エリア")}
+    co_by_area = {r["エリア"]: r["月平均CO数"] for r in data_3023_agg if r.get("エリア")}
+    result = []
+    for r in data_3029:
+        if (r.get("合計採用目安") or 0) <= 0:
+            continue
+        area = r.get("エリア", "")
+        result.append({
+            "エリア": area,
             "都道府県": r.get("都道府県"),
+            "合計採用目安": r.get("合計採用目安"),
             "既存採用目安": r.get("既存採用目安"),
             "新規開業追加": r.get("新規開業追加"),
-            "合計採用目安": r.get("合計採用目安"),
             "新規物件名": r.get("新規物件名"),
-        }
-        for r in rows
-        if (r.get("合計採用目安") or 0) > 0
-    ]
+            "現在CL数": cl_by_area.get(area),
+            "月平均CO数": co_by_area.get(area),
+        })
+    return result
 
 
 def generate_report(data_3029, data_3023, data_3025):
     today = datetime.now(JST).strftime("%Y年%m月%d日")
     data_3023_agg = aggregate_by_area(data_3023)
-    data_3029_slim = slim_3029(data_3029)
+    hiring_data = build_report_data(data_3029, data_3023_agg, data_3025)
 
-    prompt = f"""以下はクリーナー採用予測ダッシュボードのデータです（{today}時点、直近12ヶ月集計）。
-エリアごとの採用予測人数と理由を分析し、採用担当者向けのSlackレポートを作成してください。
+    prompt = f"""以下はクリーナー採用予測データです（{today}時点）。
+採用担当者向けのSlackレポートを日本語で作成してください。
 
-【合計採用目安（採用必要エリアのみ）】
-{json.dumps(data_3029_slim, ensure_ascii=False, indent=2)}
+【採用目安データ（採用必要エリアのみ）】
+{json.dumps(hiring_data, ensure_ascii=False, indent=2)}
 
-【エリア別サマリー（直近12ヶ月集計）】
-{json.dumps(data_3023_agg, ensure_ascii=False, indent=2)}
-
-【追加採用目安（開業予定3ヶ月先含む）】
+【新規開業物件の追加採用（3ヶ月以内）】
 {json.dumps(data_3025, ensure_ascii=False, indent=2)}
 
 以下の形式でSlackレポートを作成してください：
