@@ -7,7 +7,7 @@ REDASH_BASE_URL = "https://redash.unito.me"
 REDASH_API_KEY = os.environ["REDASH_API_KEY"]
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 SLACK_CHANNEL = "C0B3LFX6RLH"
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 
 JST = timezone(timedelta(hours=9))
 
@@ -94,11 +94,16 @@ def generate_report(data_3029, data_3023, data_3025):
 
 ※データがないエリアはスキップしてください。絵文字を効果的に使ってください。"""
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    resp = requests.post(url, json=payload, timeout=60)
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": "llama-3.1-8b-instant",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1500,
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=60)
     resp.raise_for_status()
-    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+    return resp.json()["choices"][0]["message"]["content"]
 
 
 def send_slack_message(text):
