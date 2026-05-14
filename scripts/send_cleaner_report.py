@@ -20,8 +20,16 @@ def fetch_query_results(query_id):
     return resp.json()["query_result"]["data"]["rows"]
 
 
+def latest_month_only(rows):
+    if not rows:
+        return rows
+    latest = max(r.get("年月", "") for r in rows)
+    return [r for r in rows if r.get("年月", "") == latest]
+
+
 def generate_report(data_3029, data_3023, data_3025):
     today = datetime.now(JST).strftime("%Y年%m月%d日")
+    data_3023_latest = latest_month_only(data_3023)
 
     prompt = f"""以下はクリーナー採用予測ダッシュボードのデータです（{today}時点）。
 エリアごとの採用予測人数と理由を分析し、採用担当者向けのSlackレポートを作成してください。
@@ -29,8 +37,8 @@ def generate_report(data_3029, data_3023, data_3025):
 【合計採用目安（既存＋新規開業）】
 {json.dumps(data_3029, ensure_ascii=False, indent=2)}
 
-【エリア別採用目安（既存物件・直近12ヶ月）】
-{json.dumps(data_3023, ensure_ascii=False, indent=2)}
+【エリア別採用目安（既存物件・最新月）】
+{json.dumps(data_3023_latest, ensure_ascii=False, indent=2)}
 
 【追加採用目安（開業予定3ヶ月先含む）】
 {json.dumps(data_3025, ensure_ascii=False, indent=2)}
