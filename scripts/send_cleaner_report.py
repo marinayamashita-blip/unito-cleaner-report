@@ -7,7 +7,7 @@ REDASH_BASE_URL = "https://redash.unito.me"
 REDASH_API_KEY = os.environ["REDASH_API_KEY"]
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 SLACK_CHANNEL = "C0B3LFX6RLH"
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 JST = timezone(timedelta(hours=9))
 
@@ -21,21 +21,18 @@ def fetch_query_results(query_id):
 
 
 def generate_report(data_3029, data_3023, data_3025):
-    import anthropic
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
     today = datetime.now(JST).strftime("%Y年%m月%d日")
 
     prompt = f"""以下はクリーナー採用予測ダッシュボードのデータです（{today}時点）。
 エリアごとの採用予測人数と理由を分析し、採用担当者向けのSlackレポートを作成してください。
 
-【合計採用目安（既存＋新規開業）query_3029】
+【合計採用目安（既存＋新規開業）】
 {json.dumps(data_3029, ensure_ascii=False, indent=2)}
 
-【エリア別採用目安（既存物件・直近12ヶ月）query_3023】
+【エリア別採用目安（既存物件・直近12ヶ月）】
 {json.dumps(data_3023, ensure_ascii=False, indent=2)}
 
-【追加採用目安（開業予定3ヶ月先含む）query_3025】
+【追加採用目安（開業予定3ヶ月先含む）】
 {json.dumps(data_3025, ensure_ascii=False, indent=2)}
 
 以下の形式でSlackレポートを作成してください：
@@ -53,12 +50,11 @@ def generate_report(data_3029, data_3023, data_3025):
 
 ※データがないエリアはスキップしてください。絵文字を効果的に使ってください。"""
 
-    response = client.messages.create(
-        model="claude-opus-4-7",
-        max_tokens=1500,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response.content[0].text
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    resp = requests.post(url, json=payload, timeout=60)
+    resp.raise_for_status()
+    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
 
 
 def send_slack_message(text):
@@ -82,7 +78,7 @@ if __name__ == "__main__":
     data_3023 = fetch_query_results(3023)
     data_3025 = fetch_query_results(3025)
 
-    print("Generating report with Claude...")
+    print("Generating report with Gemini...")
     report = generate_report(data_3029, data_3023, data_3025)
     print(report)
 
