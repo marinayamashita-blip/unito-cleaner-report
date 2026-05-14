@@ -64,13 +64,13 @@ def aggregate_by_area(rows):
 
 
 def build_report_data(data_3029, data_3023_agg, data_3025):
-    cl_by_area = {r["エリア"]: r["現在クリーナー数"] for r in data_3023_agg if r.get("エリア")}
-    co_by_area = {r["エリア"]: r["月平均CO数"] for r in data_3023_agg if r.get("エリア")}
+    agg = {r["エリア"]: r for r in data_3023_agg if r.get("エリア")}
     result = []
     for r in data_3029:
         if (r.get("合計採用目安") or 0) <= 0:
             continue
         area = r.get("エリア", "")
+        a = agg.get(area, {})
         result.append({
             "エリア": area,
             "都道府県": r.get("都道府県"),
@@ -78,8 +78,10 @@ def build_report_data(data_3029, data_3023_agg, data_3025):
             "既存採用目安": r.get("既存採用目安"),
             "新規開業追加": r.get("新規開業追加"),
             "新規物件名": r.get("新規物件名"),
-            "現在CL数": cl_by_area.get(area),
-            "月平均CO数": co_by_area.get(area),
+            "現在CL数": a.get("現在クリーナー数"),
+            "月平均CO数": a.get("月平均CO数"),
+            "月平均完了数": a.get("月平均完了数"),
+            "12ヶ月累計未充足数": a.get("12ヶ月累計未充足数"),
         })
     return result
 
