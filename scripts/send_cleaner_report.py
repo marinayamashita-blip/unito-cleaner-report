@@ -20,25 +20,61 @@ def fetch_query_results(query_id):
     return resp.json()["query_result"]["data"]["rows"]
 
 
-def latest_month_only(rows):
-    if not rows:
-        return rows
-    latest = max(r.get("年月", "") for r in rows)
-    return [r for r in rows if r.get("年月", "") == latest]
+def aggregate_by_area(rows):
+    areas = {}
+    for r in rows:
+        area = r.get("エリア", "")
+        if area not in areas:
+            areas[area] = {
+                "エリア": area,
+                "都道府県": r.get("都道府県", ""),
+                "月数": 0,
+                "合計CO数": 0,
+                "合計タスク数": 0,
+                "合計完了数": 0,
+                "合計未充足数": 0,
+                "クリーナー数": None,
+                "採用目安人数_最新": None,
+            }
+        a = areas[area]
+        a["月数"] += 1
+        a["合計CO数"] += r.get("チェックアウト数") or 0
+        a["合計タスク数"] += r.get("清掃タスク数") or 0
+        a["合計完了数"] += r.get("完了数") or 0
+        a["合計未充足数"] += r.get("未充足数") or 0
+        if r.get("クリーナー数") is not None:
+            a["クリーナー数"] = r.get("クリーナー数")
+        if r.get("採用目安人数") is not None:
+            a["採用目安人数_最新"] = r.get("採用目安人数")
+
+    result = []
+    for a in areas.values():
+        m = max(a["月数"], 1)
+        result.append({
+            "エリア": a["エリア"],
+            "都道府県": a["都道府県"],
+            "月平均CO数": round(a["合計CO数"] / m, 1),
+            "月平均タスク数": round(a["合計タスク数"] / m, 1),
+            "月平均完了数": round(a["合計完了数"] / m, 1),
+            "12ヶ月累計未充足数": a["合計未充足数"],
+            "現在クリーナー数": a["クリーナー数"],
+            "直近採用目安人数": a["採用目安人数_最新"],
+        })
+    return result
 
 
 def generate_report(data_3029, data_3023, data_3025):
     today = datetime.now(JST).strftime("%Y年%m月%d日")
-    data_3023_latest = latest_month_only(data_3023)
+    data_3023_agg = aggregate_by_area(data_3023)
 
-    prompt = f"""以下はクリーナー採用予測ダッシュボードのデータです（{today}時点）。
+    prompt = f"""以下はクリーナー採用予測ダッシュボードのデータです（{today}時点、直近12ヶ月集計）。
 エリアごとの採用予測人数と理由を分析し、採用担当者向けのSlackレポートを作成してください。
 
 【合計採用目安（既存＋新規開業）】
 {json.dumps(data_3029, ensure_ascii=False, indent=2)}
 
-【エリア別採用目安（既存物件・最新月）】
-{json.dumps(data_3023_latest, ensure_ascii=False, indent=2)}
+【エリア別サマリー（直近12ヶ月集計）】
+{json.dumps(data_3023_agg, ensure_ascii=False, indent=2)}
 
 【追加採用目安（開業予定3ヶ月先含む）】
 {json.dumps(data_3025, ensure_ascii=False, indent=2)}
