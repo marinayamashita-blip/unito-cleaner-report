@@ -1,0 +1,29 @@
+name: Daily Cleaner Recruitment Report
+
+on:
+  schedule:
+    - cron: '3 0 * * *'  # 09:03 JST (= 00:03 UTC)
+  workflow_dispatch:      # 手動実行も可
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install anthropic requests
+
+      - name: Send Cleaner Report to Slack
+        env:
+          REDASH_API_KEY: ${{ secrets.REDASH_API_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/send_cleaner_report.py
