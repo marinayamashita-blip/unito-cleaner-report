@@ -323,7 +323,13 @@ def build_report(data_3029, area_metrics, optimistic_val, pipeline_props):
             month = f"{p['opening'].year}年{p['opening'].month}月"
             co = int(p["rooms"] * (cop or 0))
             co_str = f"・月間CO +{co}件" if co > 0 else ""
-            type_label = "（宿泊）" if p.get("type") == "宿泊" else ""
+            ptype = p.get("type", "賃貸")
+            if ptype == "賃貸開業済み・宿泊":
+                type_label = "（賃貸開業済み・宿泊）"
+            elif ptype == "宿泊":
+                type_label = "（宿泊）"
+            else:
+                type_label = ""
             lines.append(f":round_pushpin: 新規物件：{p['name']}{type_label}（{p['rooms']}室・{month}開業{co_str}）")
 
         comment = comments.get(area, "")

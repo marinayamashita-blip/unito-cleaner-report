@@ -73,7 +73,8 @@ def main():
             ptype = "賃貸"
         elif d_shukuhaku:
             opening = date_shukuhaku
-            ptype = "宿泊"
+            # 賃貸日が過去に存在する場合は開業済みと明示
+            ptype = "賃貸開業済み・宿泊" if d_chintai else "宿泊"
         else:
             continue
 
