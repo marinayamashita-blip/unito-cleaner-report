@@ -54,7 +54,7 @@ def get_area(addr):
     if "練馬区" in addr: return ("東京", "練馬")
     if "中野区" in addr: return ("東京", "中野")
     if "千代田区" in addr: return ("東京", "神田・秋葉原")
-    if "中央区" in addr: return ("東京", "築地・銀座")
+    if "中央区" in addr and "北海道" not in addr and "福岡" not in addr: return ("東京", "築地・銀座")
     if "横浜市" in addr: return ("神奈川", "横浜")
     if "鎌倉市" in addr or "逗子市" in addr: return ("神奈川", "鎌倉・逗子")
     if "箱根" in addr or "湯河原" in addr or "真鶴" in addr: return ("神奈川", "箱根・湯河原")
