@@ -12,7 +12,7 @@ WORKSHEET_GID = 1994830091
 OUTPUT_PATH = "/tmp/pipeline_props.json"
 
 EXCLUDED = {"ミラージュパレス日本橋Cloud"}
-TARGET_STATUS = {"B_PJT進捗", "C_口頭合意"}
+TARGET_STATUS = {"B_PJT進捗"}
 DATE_RE = re.compile(r"^\d{4}/\d{2}/\d{2}$")
 
 JST = timezone(timedelta(hours=9))
