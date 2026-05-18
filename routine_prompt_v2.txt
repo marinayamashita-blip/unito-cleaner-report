@@ -1,0 +1,218 @@
+毎朝のクリーナー採用予測レポートを生成してSlackに送信してください。
+
+## Step 1: スプレッドシートからパイプライン物件を読み込む
+
+`mcp__claude_ai_Google_Drive__read_file_content` ツールでfileId `1TMmeh5nw-MjdEOoaFwTp2KZWtlmVlo3XaI6QZWmjbxQ` を読み込んでください。
+
+以下の条件に合う行を抽出してください：
+- ステータス列（col2）= `B_PJT進捗` または `C_口頭合意`
+- 開業日が以下の優先順位で YYYY/MM/DD 形式の有効な日付を持つ（`-`・`○`・`×`・空白は除外）
+  1. col30（販売可能日 賃貸）が有効な日付 → `type: "賃貸"` として使用
+  2. col30 が無効・空で col31（販売可能日 宿泊）が有効な日付 → `type: "宿泊"` として使用
+  3. 両方ない場合は除外
+
+各行から取得するフィールド：物件名（col4）、対象室数（col5・数値）、建物住所（col8）、開業日（YYYY/MM/DD形式）、type（"賃貸" または "宿泊"）
+
+## Step 2: 以下のPythonスクリプトの PIPELINE_PROPS を埋めて /tmp/cleaner_report.py に保存し、`python3 /tmp/cleaner_report.py` で実行する
+
+```python
+import math, requests
+from datetime import datetime, timezone, timedelta
+from collections import defaultdict
+
+REDASH_BASE_URL = 'https://redash.unito.me'
+REDASH_API_KEY = os.environ['REDASH_API_KEY']
+SLACK_BOT_TOKEN = os.environ['SLACK_BOT_TOKEN']
+SLACK_CHANNEL = 'C0B3LFX6RLH'
+
+JST = timezone(timedelta(hours=9))
+TODAY = datetime.now(JST).replace(tzinfo=None)
+
+# Step 1で抽出したパイプライン物件データ（Claude が埋める）
+PIPELINE_PROPS = [
+    # {'name': '物件名', 'rooms': 6, 'address': '北海道札幌市中央区南11条西1-1-18', 'opening': '2026/05/18'},
+]
+
+def get_area(addr):
+    if not addr: return (None, None)
+    if '大阪市北区' in addr: return ('大阪', '梅田・北区')
+    if '大阪市淀川区' in addr: return ('大阪', '新大阪')
+    if '大阪市中央区' in addr: return ('大阪', '心斎橋・本町')
+    if '大阪市浪速区' in addr: return ('大阪', '難波')
+    if '大阪市都島区' in addr: return ('大阪', '京橋')
+    if '大阪市旭区' in addr: return ('大阪', '城北')
+    if '大阪市西成区' in addr: return ('大阪', '西成')
+    if '大阪市港区' in addr: return ('大阪', '大阪港')
+    if '東大阪市' in addr: return ('大阪', '東大阪')
+    if '渋谷区' in addr: return ('東京', '渋谷・恵比寿')
+    if '新宿区' in addr: return ('東京', '新宿・高田馬場')
+    if '豊島区' in addr: return ('東京', '池袋')
+    if '墨田区' in addr: return ('東京', '錦糸町・押上')
+    if '大田区' in addr: return ('東京', '蒲田・大田')
+    if '江戸川区' in addr: return ('東京', '葛西')
+    if '江東区' in addr: return ('東京', '亀戸・森下')
+    if '板橋区' in addr: return ('東京', '板橋')
+    if '港区' in addr: return ('東京', '港区')
+    if '世田谷区' in addr: return ('東京', '世田谷')
+    if '目黒区' in addr: return ('東京', '目黒')
+    if '台東区' in addr: return ('東京', '浅草・上野')
+    if '荒川区' in addr: return ('東京', '荒川')
+    if '北区' in addr: return ('東京', '北区・田端')
+    if '葛飾区' in addr: return ('東京', '葛飾')
+    if '品川区' in addr: return ('東京', '品川')
+    if '足立区' in addr: return ('東京', '足立')
+    if '練馬区' in addr: return ('東京', '練馬')
+    if '中野区' in addr: return ('東京', '中野')
+    if '千代田区' in addr: return ('東京', '神田・秋葉原')
+    if '中央区' in addr: return ('東京', '築地・銀座')
+    if '横浜市' in addr: return ('神奈川', '横浜')
+    if '鎌倉市' in addr or '逗子市' in addr: return ('神奈川', '鎌倉・逗子')
+    if '箱根' in addr or '湯河原' in addr or '真鶴' in addr: return ('神奈川', '箱根・湯河原')
+    if '藤沢市' in addr: return ('神奈川', '湘南・藤沢')
+    if '小田原市' in addr: return ('神奈川', '小田原')
+    if '市川市' in addr or '浦安市' in addr: return ('千葉', '行徳・浦安')
+    if '富津市' in addr: return ('千葉', '富津')
+    if '京都市下京区' in addr: return ('京都', '河原町・五条')
+    if '京都市伏見区' in addr: return ('京都', '伏見')
+    if '京都' in addr: return ('京都', '京都')
+    if '福岡市博多区' in addr: return ('福岡', '博多')
+    if '福岡市東区' in addr: return ('福岡', '福岡東区')
+    if '福岡' in addr or '博多' in addr: return ('福岡', '福岡')
+    if '那覇市' in addr: return ('沖縄', '那覇')
+    if '沖縄市' in addr: return ('沖縄', '沖縄市')
+    if '沖縄' in addr: return ('沖縄', '沖縄')
+    if '札幌市' in addr or '北海道' in addr: return ('北海道', '札幌')
+    if '函館市' in addr: return ('北海道', '函館')
+    if '名古屋市' in addr or '愛知' in addr: return ('愛知', '名古屋')
+    return (None, None)
+
+def fetch_redash(qid):
+    r = requests.get(f'{REDASH_BASE_URL}/api/queries/{qid}/results',
+                     headers={'Authorization': f'Key {REDASH_API_KEY}'}, timeout=30)
+    r.raise_for_status()
+    return r.json()['query_result']['data']['rows']
+
+def parse_date(s):
+    if not s or str(s).strip() in ('-', '○', '×', '\\-', ''): return None
+    s = str(s).strip().split(' ')[0]
+    for fmt in ('%Y/%m/%d', '%Y-%m-%d'):
+        try: return datetime.strptime(s, fmt)
+        except: pass
+    return None
+
+def three_month_end():
+    d = TODAY + timedelta(days=92)
+    nm = d.replace(day=28) + timedelta(days=4)
+    return nm - timedelta(days=nm.day)
+
+cutoff = three_month_end()
+data_3029 = fetch_redash(3029)
+data_3023 = fetch_redash(3023)
+
+metrics_raw = defaultdict(lambda: {'co': [], 'cl': []})
+for r in data_3023:
+    area = r.get('エリア', '')
+    pref = r.get('都道府県', '')
+    if not area or area == 'その他': continue
+    k = (pref, area)
+    co = r.get('チェックアウト数', 0) or 0
+    prop = r.get('物件数', 0) or 0
+    if prop > 0: metrics_raw[k]['co'].append(co / prop)
+    cl = r.get('クリーナー1人あたり完了数', 0) or 0
+    if cl > 0: metrics_raw[k]['cl'].append(cl)
+
+def avg_metrics(pref, area):
+    m = metrics_raw.get((pref, area), {})
+    co_list = m.get('co', [])
+    cl_list = m.get('cl', [])
+    cop = sum(co_list) / len(co_list) if co_list else None
+    clp = max(sum(cl_list) / len(cl_list) if cl_list else 5.3, 5.3)
+    return cop, clp
+
+all_cl = sorted([r.get('クリーナー1人あたり完了数', 0) or 0 for r in data_3023
+                 if (r.get('クリーナー1人あたり完了数') or 0) > 0
+                 and r.get('エリア', '') not in ('', 'その他')])
+optimistic = int(round(sum(all_cl[int(len(all_cl)*0.75):]) / max(len(all_cl[int(len(all_cl)*0.75):]), 1))) if all_cl else 25
+
+pipeline_by_area = defaultdict(list)
+for p in PIPELINE_PROPS:
+    d = parse_date(p.get('opening', ''))
+    if not d or d <= TODAY or d > cutoff: continue
+    pref, area = get_area(p.get('address', ''))
+    if not area: continue
+    rooms = int(str(p.get('rooms', 0)).replace('室', '').strip() or 0)
+    pipeline_by_area[(pref, area)].append({'name': p['name'], 'rooms': rooms, 'opening': d})
+
+existing_by_area = {}
+for r in data_3029:
+    area = r.get('エリア', '')
+    pref = r.get('都道府県', '')
+    if area and pref:
+        existing_by_area[(pref, area)] = int(r.get('既存採用目安', 0) or 0)
+
+all_keys = set(existing_by_area) | set(pipeline_by_area)
+area_results = []
+for pref, area in all_keys:
+    ex = existing_by_area.get((pref, area), 0)
+    pipes = pipeline_by_area.get((pref, area), [])
+    if not pipes:
+        area_results.append({'pref': pref, 'area': area, 'ex': ex, 'p_cur': 0, 'p_mid': 0, 'p_25': 0, 'pipes': [], 'total': ex})
+        continue
+    cop, clp = avg_metrics(pref, area)
+    total_co = sum(p['rooms'] * (cop or 0) for p in pipes)
+    p_cur = math.ceil(total_co / clp) if total_co > 0 and clp > 0 else 0
+    p_25 = math.ceil(total_co / optimistic) if total_co > 0 and optimistic > 0 else 0
+    p_mid = math.ceil((p_cur + p_25) / 2)
+    area_results.append({'pref': pref, 'area': area, 'ex': ex, 'p_cur': p_cur, 'p_mid': p_mid, 'p_25': p_25, 'pipes': pipes, 'total': ex + p_cur})
+
+area_results.sort(key=lambda x: -x['total'])
+
+today_str = TODAY.strftime('%Y-%m-%d')
+cutoff_str = f'{cutoff.year}年{cutoff.month}月末'
+lines = [
+    f':bar_chart: *クリーナー採用予測レポート｜{today_str}*',
+    f'_集計期間：直近12ヶ月 ／ パイプライン：〜{cutoff_str}の開業予定物件を含む_',
+    '_ダッシュボード：https://redash.unito.me/dashboard/-_11_',
+    '',
+    '> :bulb: *3パターンの見方*',
+    '> • *現行*：エリア平均CL生産性（フロア5.3件/人/月）ベース。保守的な上限値。',
+    f'> • *中間値*：現行と{optimistic}件/人の平均。現実的な目標値。',
+    f'> • *{optimistic}件/人*：楽観値ベースの必要人数。',
+    '',
+    ':dart: *エリア別 採用目安（優先度順）*',
+]
+sum_cur = sum_mid = sum_25 = 0
+for r in area_results:
+    pref, area, ex = r['pref'], r['area'], r['ex']
+    p_cur, p_mid, p_25, pipes, total = r['p_cur'], r['p_mid'], r['p_25'], r['pipes'], r['total']
+    if total == 0:
+        lines.append(f':information_source: *{area}（{pref}）｜0人*（既存CLで対応可能）')
+        continue
+    days_to = min(((p['opening'] - TODAY).days for p in pipes), default=999)
+    urgency = '急ぎ・開業1ヶ月前' if pipes and days_to <= 31 else ('開業2ヶ月前' if pipes and days_to <= 60 else None)
+    emoji = ':red_circle:' if total >= 5 or urgency else (':large_yellow_circle:' if total >= 3 else ':large_green_circle:')
+    lines.append(emoji + f' *{area}（{pref}）*' + (f' :warning: _{urgency}_' if urgency else ''))
+    if ex > 0: lines.append(f'既存：{ex}人')
+    if pipes:
+        lines.append(f'新規追加　｜　現行：*{p_cur}人*　中間値：*{p_mid}人*　{optimistic}件/人：*{p_25}人*')
+        for p in pipes:
+            mo = f"{p['opening'].year}年{p['opening'].month}月"
+            lines.append(f":round_pushpin: {p['name']}（{p['rooms']}室・{mo}開業）")
+    lines.append('')
+    sum_cur += ex + p_cur
+    sum_mid += ex + p_mid
+    sum_25 += ex + p_25
+
+lines.extend([
+    f':pushpin: *合計｜現行：{sum_cur}人　中間値：{sum_mid}人　{optimistic}件/人：{sum_25}人*',
+    '_※ データ出典：直近12ヶ月Redash ＋ 開業案件管理スプレッドシート（B_PJT進捗/C_口頭合意）_',
+])
+report = '\n'.join(lines)
+print(report[:500])
+resp = requests.post('https://slack.com/api/chat.postMessage',
+    headers={'Authorization': f'Bearer {SLACK_BOT_TOKEN}', 'Content-Type': 'application/json'},
+    json={'channel': SLACK_CHANNEL, 'text': report, 'mrkdwn': True}, timeout=30)
+result = resp.json()
+if result.get('ok'): print(f'Slack送信完了: ts={result.get("ts")}')
+else: raise RuntimeError(f'Slack error: {result.get("error")}')
+```
