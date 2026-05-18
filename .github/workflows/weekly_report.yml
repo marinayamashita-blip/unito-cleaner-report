@@ -1,0 +1,32 @@
+name: Weekly Cleaner Report
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'  # 毎週月曜 09:00 JST (= UTC 00:00)
+  workflow_dispatch:      # 手動実行ボタン
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch pipeline data from Google Sheets
+        run: python scripts/fetch_pipeline.py
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+
+      - name: Send Slack report
+        run: python scripts/send_cleaner_report.py
+        env:
+          REDASH_API_KEY: ${{ secrets.REDASH_API_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
