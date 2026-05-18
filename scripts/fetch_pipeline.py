@@ -90,10 +90,19 @@ def main():
             "type": ptype,
         })
 
-    with open(OUTPUT_PATH, "w") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
+    # 物件名＋開業日が同じものは同一データとして重複除去
+    seen = set()
+    deduped = []
+    for p in results:
+        key = (p["name"], p["opening"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(p)
 
-    print(f"{len(results)} properties written to {OUTPUT_PATH}")
+    with open(OUTPUT_PATH, "w") as f:
+        json.dump(deduped, f, ensure_ascii=False, indent=2)
+
+    print(f"{len(deduped)} properties written to {OUTPUT_PATH} (deduped from {len(results)})")
 
 
 if __name__ == "__main__":
