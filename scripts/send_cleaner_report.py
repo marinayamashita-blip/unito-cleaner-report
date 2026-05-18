@@ -107,8 +107,8 @@ def parse_date(s):
         return None
 
 
-def three_month_end():
-    target = TODAY + timedelta(days=92)
+def two_month_end():
+    target = TODAY + timedelta(days=61)
     next_month = target.replace(day=28) + timedelta(days=4)
     return next_month - timedelta(days=next_month.day)
 
@@ -233,7 +233,7 @@ def generate_comments(areas_data):
 
 
 def build_report(data_3029, area_metrics, optimistic_val, pipeline_props):
-    cutoff = three_month_end()
+    cutoff = two_month_end()
     pipeline_by_area = build_pipeline_by_area(pipeline_props, area_metrics, optimistic_val, cutoff)
 
     existing_by_area = {}
@@ -269,7 +269,7 @@ def build_report(data_3029, area_metrics, optimistic_val, pipeline_props):
     cutoff_str = f"{cutoff.year}年{cutoff.month}月末"
     header = (
         f":bar_chart: *クリーナー採用予測レポート｜{today_str}*\n"
-        f"_集計期間：直近12ヶ月 ／ パイプライン：〜{cutoff_str}の開業予定物件を含む_\n"
+        f"_集計期間：直近12ヶ月 ／ パイプライン：〜{cutoff_str}の開業予定物件を含む（2ヶ月先末まで）_\n"
         "_ダッシュボード：https://redash.unito.me/dashboard/-_11_\n"
         "\n"
         "> :bulb: *3パターンの見方*\n"
