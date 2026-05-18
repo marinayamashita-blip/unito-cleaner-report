@@ -15,6 +15,7 @@ PIPELINE_PROPS_PATH = "/tmp/pipeline_props.json"
 # 採用予測から除外する物件名（手動管理）
 EXCLUDED_PROPERTIES = {
     "ミラージュパレス日本橋Cloud",
+    "TakaMatsu Residense 南船場",
 }
 
 JST = timezone(timedelta(hours=9))
