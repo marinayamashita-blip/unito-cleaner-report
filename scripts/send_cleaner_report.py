@@ -12,69 +12,127 @@ SLACK_CHANNEL = "C0B3LFX6RLH"
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 PIPELINE_PROPS_PATH = "/tmp/pipeline_props.json"
 
+# CL1人あたり月間完了数の下限（フロア値）。半年〜1年ごとに手動で見直す。
+# 2026-10-04: ZensWork直近12ヶ月・個人CL・副業型の中央値（直近2ヶ月稼働ゼロの離脱者を除く）
+FLOOR_PER_CL = 8.5
+
 # 採用予測から除外する物件名（手動管理）
 EXCLUDED_PROPERTIES = {
     "ミラージュパレス日本橋Cloud",
     "TakaMatsu Residense 南船場",
+    "ZONE SHINSAIBASHI WEST",
+    "TOKYO β 駒沢大学3",
+    "Grand STAY 博多駅北",
+    "ガーデンザヴィス南蒲田",
+    "ガーデンザヴィス木場",
+    "ウエリスアーバン水天宮前",
 }
 
 JST = timezone(timedelta(hours=9))
 TODAY = datetime.now(JST).replace(tzinfo=None)
 
 
+# 都道府県の短縮形 → 住所中の正式表記 (query_3016の area.都道府県 に相当)
+_PREF_FULL = [
+    ("北海道", "北海道"), ("青森", "青森県"), ("岩手", "岩手県"), ("宮城", "宮城県"),
+    ("秋田", "秋田県"), ("山形", "山形県"), ("福島", "福島県"), ("茨城", "茨城県"),
+    ("栃木", "栃木県"), ("群馬", "群馬県"), ("埼玉", "埼玉県"), ("千葉", "千葉県"),
+    ("東京", "東京都"), ("神奈川", "神奈川県"), ("新潟", "新潟県"), ("富山", "富山県"),
+    ("石川", "石川県"), ("福井", "福井県"), ("山梨", "山梨県"), ("長野", "長野県"),
+    ("岐阜", "岐阜県"), ("静岡", "静岡県"), ("愛知", "愛知県"), ("三重", "三重県"),
+    ("滋賀", "滋賀県"), ("京都", "京都府"), ("大阪", "大阪府"), ("兵庫", "兵庫県"),
+    ("奈良", "奈良県"), ("和歌山", "和歌山県"), ("鳥取", "鳥取県"), ("島根", "島根県"),
+    ("岡山", "岡山県"), ("広島", "広島県"), ("山口", "山口県"), ("徳島", "徳島県"),
+    ("香川", "香川県"), ("愛媛", "愛媛県"), ("高知", "高知県"), ("福岡", "福岡県"),
+    ("佐賀", "佐賀県"), ("長崎", "長崎県"), ("熊本", "熊本県"), ("大分", "大分県"),
+    ("宮崎", "宮崎県"), ("鹿児島", "鹿児島県"), ("沖縄", "沖縄県"),
+]
+
+def _get_pref(addr):
+    """住所から都道府県短縮名を返す。"""
+    for short, full in _PREF_FULL:
+        if full in addr:
+            return short
+    # 都道府県名なしで市から始まる場合（例: 福岡市博多区...）
+    for short, _ in _PREF_FULL:
+        if addr.startswith(short):
+            return short
+    return None
+
+
+def _area_from_addr(pref, addr):
+    """
+    query_3016の非東京エリア計算ロジック（Pythonで再実装）:
+    都道府県・市名（区名）形式で返す。
+    """
+    市_idx = addr.find("市")
+    if 市_idx == -1:
+        return pref
+
+    区_idx = addr.find("区")
+
+    # start: 県/道/府/都 or 都道府県名の直後
+    start = None
+    for ch in ["県", "道", "府", "都"]:
+        i = addr.find(ch)
+        if 0 <= i < 市_idx:
+            start = i + 1
+            break
+    if start is None:
+        i = addr.find(pref)
+        if 0 <= i < 市_idx:
+            start = i
+        else:
+            start = max(0, 市_idx - len(pref))
+
+    if 区_idx != -1 and 区_idx > 市_idx:
+        # 市の後に区あり: 市名+区名まで
+        return pref + "・" + addr[start:区_idx + 1]
+    elif start == 市_idx:
+        # 市川市 などの「市始まり」の市名
+        next_市 = addr.find("市", 市_idx + 1)
+        if next_市 != -1:
+            return pref + "・" + addr[市_idx:next_市 + 1]
+        return pref + "・" + addr[市_idx:市_idx + 1]
+    else:
+        # 通常の市名
+        return pref + "・" + addr[start:市_idx + 1]
+
+
 def get_area(addr):
     if not addr:
         return (None, None)
-    if "大阪市北区" in addr: return ("大阪", "梅田・北区")
-    if "大阪市淀川区" in addr: return ("大阪", "新大阪")
-    if "大阪市中央区" in addr: return ("大阪", "心斎橋・本町")
-    if "大阪市浪速区" in addr: return ("大阪", "難波")
-    if "大阪市都島区" in addr: return ("大阪", "京橋")
-    if "大阪市旭区" in addr: return ("大阪", "城北")
-    if "大阪市西成区" in addr: return ("大阪", "西成")
-    if "大阪市港区" in addr: return ("大阪", "大阪港")
-    if "東大阪市" in addr: return ("大阪", "東大阪")
-    if "渋谷区" in addr: return ("東京", "渋谷・恵比寿")
-    if "新宿区" in addr: return ("東京", "新宿・高田馬場")
-    if "豊島区" in addr: return ("東京", "池袋")
-    if "墨田区" in addr: return ("東京", "錦糸町・押上")
-    if "大田区" in addr: return ("東京", "蒲田・大田")
-    if "江戸川区" in addr: return ("東京", "葛西")
-    if "江東区" in addr: return ("東京", "亀戸・森下")
-    if "板橋区" in addr: return ("東京", "板橋")
-    if "港区" in addr: return ("東京", "港区")
-    if "世田谷区" in addr: return ("東京", "世田谷")
-    if "目黒区" in addr: return ("東京", "目黒")
-    if "台東区" in addr: return ("東京", "浅草・上野")
-    if "荒川区" in addr: return ("東京", "荒川")
-    if "北区" in addr: return ("東京", "北区・田端")
-    if "葛飾区" in addr: return ("東京", "葛飾")
-    if "品川区" in addr: return ("東京", "品川")
-    if "足立区" in addr: return ("東京", "足立")
-    if "練馬区" in addr: return ("東京", "練馬")
-    if "中野区" in addr: return ("東京", "中野")
-    if "千代田区" in addr: return ("東京", "神田・秋葉原")
-    if "東京都中央区" in addr: return ("東京", "築地・銀座")
-    if "横浜市" in addr: return ("神奈川", "横浜")
-    if "鎌倉市" in addr or "逗子市" in addr: return ("神奈川", "鎌倉・逗子")
-    if "箱根" in addr or "湯河原" in addr or "真鶴" in addr: return ("神奈川", "箱根・湯河原")
-    if "藤沢市" in addr: return ("神奈川", "湘南・藤沢")
-    if "小田原市" in addr: return ("神奈川", "小田原")
-    if "市川市" in addr or "浦安市" in addr: return ("千葉", "行徳・浦安")
-    if "富津市" in addr: return ("千葉", "富津")
-    if "京都市下京区" in addr: return ("京都", "河原町・五条")
-    if "京都市伏見区" in addr: return ("京都", "伏見")
-    if "京都" in addr: return ("京都", "京都")
-    if "福岡市博多区" in addr: return ("福岡", "博多")
-    if "福岡市東区" in addr: return ("福岡", "福岡東区")
-    if "福岡" in addr or "博多" in addr: return ("福岡", "福岡")
-    if "那覇市" in addr: return ("沖縄", "那覇")
-    if "沖縄市" in addr: return ("沖縄", "沖縄市")
-    if "沖縄" in addr: return ("沖縄", "沖縄")
-    if "札幌市" in addr or "北海道" in addr: return ("北海道", "札幌")
-    if "函館市" in addr: return ("北海道", "函館")
-    if "名古屋市" in addr or "愛知" in addr: return ("愛知", "名古屋")
-    return (None, None)
+
+    pref = _get_pref(addr)
+    if not pref:
+        return (None, None)
+
+    # 東京: query_3016の東京23区ゾーンCASEを適用（auto-sync対象）
+    if pref == "東京":
+        # --- BEGIN TOKYO AREA MAPPING (auto-synced from query_3016) ---
+        if "渋谷区" in addr or "恵比寿" in addr or "目黒区" in addr or "代官山" in addr: return ("東京", "渋谷・恵比寿")
+        if "新宿区" in addr or "高田馬場" in addr or "早稲田" in addr: return ("東京", "新宿・高田馬場")
+        if "豊島区" in addr or "池袋" in addr: return ("東京", "池袋")
+        if "板橋区" in addr: return ("東京", "板橋")
+        if "港区" in addr or "麻布" in addr or "赤坂" in addr or "六本木" in addr: return ("東京", "港区")
+        if "中央区" in addr or "築地" in addr or "銀座" in addr or "日本橋" in addr: return ("東京", "築地・銀座")
+        if "台東区" in addr or "浅草" in addr or "上野" in addr: return ("東京", "浅草・上野")
+        if "品川区" in addr or "大崎" in addr: return ("東京", "品川")
+        if "世田谷区" in addr: return ("東京", "世田谷")
+        if "杉並区" in addr or "中野区" in addr: return ("東京", "杉並・中野")
+        if "文京区" in addr: return ("東京", "文京区")
+        if "千代田区" in addr: return ("東京", "千代田区")
+        if "北区" in addr: return ("東京", "北区")
+        if "練馬区" in addr: return ("東京", "練馬")
+        if "墨田区" in addr or "江東区" in addr: return ("東京", "墨田・江東")
+        if "荒川区" in addr or "足立区" in addr: return ("東京", "足立・荒川")
+        if "葛飾区" in addr or "江戸川区" in addr: return ("東京", "葛飾・江戸川")
+        if "大田区" in addr: return ("東京", "大田区")
+    # --- END TOKYO AREA MAPPING ---
+        return ("東京", "東京")  # 多摩地区など区に該当しない場合
+
+    # 非東京: query_3016の動的市区名抽出
+    return (pref, _area_from_addr(pref, addr))
 
 
 def fetch_query_results(query_id):
@@ -126,7 +184,7 @@ def urgency_label(opening_date):
 
 
 def priority_emoji(total, urgency):
-    if total >= 5 or urgency:
+    if total >= 5 or urgency == "急ぎ・開業1ヶ月前":
         return ":red_circle:"
     if total >= 3:
         return ":large_yellow_circle:"
@@ -154,7 +212,7 @@ def compute_area_metrics(data_3023):
     for k, v in raw.items():
         co_list, cl_list = v["co"], v["cl"]
         cop = sum(co_list) / len(co_list) if co_list else None
-        clp = max(sum(cl_list) / len(cl_list) if cl_list else 5.3, 5.3)
+        clp = max(sum(cl_list) / len(cl_list) if cl_list else FLOOR_PER_CL, FLOOR_PER_CL)
         metrics[k] = (cop, clp)
 
     all_cl = sorted([
@@ -173,7 +231,7 @@ def build_pipeline_by_area(pipeline_props, area_metrics, optimistic_val, cutoff)
     """Group pipeline properties by area and compute 3-scenario hiring estimates."""
     by_area = defaultdict(list)
     for p in pipeline_props:
-        if p.get("name", "") in EXCLUDED_PROPERTIES:
+        if any(ex in p.get("name", "") for ex in EXCLUDED_PROPERTIES):
             continue
         d = parse_date(p.get("opening", ""))
         if not d or d <= TODAY or d > cutoff:
@@ -188,9 +246,15 @@ def build_pipeline_by_area(pipeline_props, area_metrics, optimistic_val, cutoff)
             "type": p.get("type", "賃貸"),
         })
 
+    # エリア固有データがない場合の全エリア平均CO率
+    all_cops = [v[0] for v in area_metrics.values() if v[0] is not None]
+    global_cop = sum(all_cops) / len(all_cops) if all_cops else None
+
     result = {}
     for (pref, area), props in by_area.items():
-        cop, clp = area_metrics.get((pref, area), (None, 5.3))
+        cop, clp = area_metrics.get((pref, area), (None, FLOOR_PER_CL))
+        if not cop:  # None または 0（実績なし）は全エリア平均で推定
+            cop = global_cop
         monthly_co = sum(p["rooms"] * (cop or 0) for p in props)
         p_cur = math.ceil(monthly_co / clp) if monthly_co > 0 else 0
         p_25 = math.ceil(monthly_co / optimistic_val) if monthly_co > 0 and optimistic_val > 0 else 0
@@ -217,9 +281,9 @@ def generate_comments(areas_data):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": "openai/gpt-oss-120b",
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 600,
+        "max_tokens": 2000,
     }
     resp = requests.post(url, headers=headers, json=payload, timeout=60)
     resp.raise_for_status()
@@ -244,7 +308,11 @@ def build_report(data_3029, area_metrics, optimistic_val, pipeline_props):
         if area and pref:
             existing_by_area[(pref, area)] = int(r.get("既存採用目安", 0) or 0)
 
-    all_keys = set(existing_by_area.keys()) | set(pipeline_by_area.keys())
+    # 既存採用目安が0かつパイプラインもないエリアは除外（エリア名変更後の孤立エントリ対策）
+    all_keys = {
+        k for k in set(existing_by_area.keys()) | set(pipeline_by_area.keys())
+        if existing_by_area.get(k, 0) > 0 or k in pipeline_by_area
+    }
 
     def area_total(key):
         return existing_by_area.get(key, 0) + pipeline_by_area.get(key, {}).get("p_cur", 0)
@@ -274,7 +342,7 @@ def build_report(data_3029, area_metrics, optimistic_val, pipeline_props):
         "_ダッシュボード：https://redash.unito.me/dashboard/-_11_\n"
         "\n"
         "> :bulb: *3パターンの見方*\n"
-        "> • *現行*：エリア平均CL生産性（フロア5.3件/人/月）ベース。保守的な上限値。\n"
+        f"> • *現行*：エリア平均CL生産性（フロア{FLOOR_PER_CL}件/人/月）ベース。保守的な上限値。\n"
         f"> • *中間値*：現行と{optimistic_val}件/人の平均。現実的な目標値として活用可。\n"
         f"> • *{optimistic_val}件/人*：月{optimistic_val}件こなせる想定の楽観値。生産性目標達成時の必要人数。\n"
         "\n"
@@ -290,15 +358,15 @@ def build_report(data_3029, area_metrics, optimistic_val, pipeline_props):
         pm = pipeline_by_area.get(key, {})
         total = area_total(key)
 
-        if total == 0:
-            sections.append(f":information_source: *{area}（{pref}）｜0人*（既存CLで対応可能）")
-            continue
-
         p_cur = pm.get("p_cur", 0)
         p_mid = pm.get("p_mid", 0)
         p_25 = pm.get("p_25", 0)
         props = pm.get("props", [])
         cop = pm.get("cop")
+
+        if total == 0 and not props:
+            sections.append(f":information_source: *{area}（{pref}）｜0人*（既存CLで対応可能）")
+            continue
 
         if not props:
             emoji = priority_emoji(ex, None)
