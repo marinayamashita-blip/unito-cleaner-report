@@ -16,6 +16,11 @@ PIPELINE_PROPS_PATH = "/tmp/pipeline_props.json"
 # 2026-10-04: ZensWork直近12ヶ月・個人CL・副業型の中央値（直近2ヶ月稼働ゼロの離脱者を除く）
 FLOOR_PER_CL = 8.5
 
+# 採用目標の前提：週6件以上（1日3件×週2日〜）入れる人を採る → 6件 × 52週 ÷ 12ヶ月 = 26件/月（2026-10-04決定）
+TARGET_PER_CL = 26
+# 採用期限 = 開業日の何日前か（応募〜稼働3〜5日＋研修）
+HIRE_LEAD_DAYS = 7
+
 # 採用予測から除外する物件名（手動管理）
 EXCLUDED_PROPERTIES = {
     "ミラージュパレス日本橋Cloud",
@@ -172,21 +177,16 @@ def two_month_end():
     return next_month - timedelta(days=next_month.day)
 
 
-def urgency_label(opening_date):
-    if not opening_date:
-        return None
-    days = (opening_date - TODAY).days
-    if days <= 31:
-        return "急ぎ・開業1ヶ月前"
-    if days <= 60:
-        return "開業2ヶ月前"
-    return None
+def _days_left(d):
+    return (d.date() - TODAY.date()).days
 
 
-def priority_emoji(total, urgency):
-    if total >= 5 or urgency == "急ぎ・開業1ヶ月前":
+def priority_emoji(hires, deadline):
+    if deadline is not None and _days_left(deadline) <= 14:
         return ":red_circle:"
-    if total >= 3:
+    if hires >= 5:
+        return ":red_circle:"
+    if hires >= 3:
         return ":large_yellow_circle:"
     return ":large_green_circle:"
 
@@ -227,9 +227,12 @@ def compute_area_metrics(data_3023):
     return metrics, optimistic_val
 
 
-def build_pipeline_by_area(pipeline_props, area_metrics, optimistic_val, cutoff):
-    """Group pipeline properties by area and compute 3-scenario hiring estimates."""
-    by_area = defaultdict(list)
+def build_pipeline_by_month(pipeline_props, area_metrics, cutoff):
+    """開業月×エリアごとに月間CO予測と採用目標人数（TARGET_PER_CL基準）を集計する。"""
+    all_cops = [v[0] for v in area_metrics.values() if v[0] is not None]
+    global_cop = sum(all_cops) / len(all_cops) if all_cops else None
+
+    grouped = defaultdict(list)
     for p in pipeline_props:
         if any(ex in p.get("name", "") for ex in EXCLUDED_PROPERTIES):
             continue
@@ -239,44 +242,41 @@ def build_pipeline_by_area(pipeline_props, area_metrics, optimistic_val, cutoff)
         pref, area = get_area(p.get("address", ""))
         if not area:
             continue
-        by_area[(pref, area)].append({
+        cop = area_metrics.get((pref, area), (None, None))[0] or global_cop or 0
+        grouped[(d.year, d.month, pref, area)].append({
             "name": p["name"],
             "rooms": int(p.get("rooms", 0)),
             "opening": d,
             "type": p.get("type", "賃貸"),
+            "co": int(p.get("rooms", 0)) * cop,
         })
 
-    # エリア固有データがない場合の全エリア平均CO率
-    all_cops = [v[0] for v in area_metrics.values() if v[0] is not None]
-    global_cop = sum(all_cops) / len(all_cops) if all_cops else None
-
-    result = {}
-    for (pref, area), props in by_area.items():
-        cop, clp = area_metrics.get((pref, area), (None, FLOOR_PER_CL))
-        if not cop:  # None または 0（実績なし）は全エリア平均で推定
-            cop = global_cop
-        monthly_co = sum(p["rooms"] * (cop or 0) for p in props)
-        p_cur = math.ceil(monthly_co / clp) if monthly_co > 0 else 0
-        p_25 = math.ceil(monthly_co / optimistic_val) if monthly_co > 0 and optimistic_val > 0 else 0
-        p_mid = math.ceil((p_cur + p_25) / 2)
-        result[(pref, area)] = {
-            "props": props,
-            "cop": cop,
+    result = defaultdict(dict)
+    for (y, m, pref, area), props in grouped.items():
+        monthly_co = sum(p["co"] for p in props)
+        hires = math.ceil(monthly_co / TARGET_PER_CL) if monthly_co > 0 else 0
+        hires_ref = math.ceil(monthly_co / FLOOR_PER_CL) if monthly_co > 0 else 0
+        deadline = min(p["opening"] for p in props) - timedelta(days=HIRE_LEAD_DAYS)
+        result[(y, m)][(pref, area)] = {
+            "props": sorted(props, key=lambda p: p["opening"]),
             "monthly_co": monthly_co,
-            "p_cur": p_cur,
-            "p_25": p_25,
-            "p_mid": p_mid,
+            "hires": hires,
+            "hires_ref": hires_ref,
+            "deadline": deadline,
         }
     return result
 
 
-def generate_comments(areas_data):
-    if not areas_data:
+def generate_comments(items):
+    """items: [{"id": "A1", ...}]。戻り値は {id: コメント}。"""
+    if not items:
         return {}
     prompt = (
-        "以下のエリアについて、採用担当者向けに簡潔な採用アクションコメントを1文ずつ生成してください。\n"
-        "「エリア名: コメント」の形式で返してください。中間値を基準に採用目標を設定する提案を含め、開業の緊急度も考慮してください。\n\n"
-        f"データ:\n{json.dumps(areas_data, ensure_ascii=False)}"
+        "以下の各項目（エリア×開業月）について、採用担当者向けに簡潔な採用アクションコメントを1文ずつ生成してください。\n"
+        "「ID: コメント」の形式で、IDはそのまま返してください。採用目標人数と採用期限（今日からの残り日数）を踏まえた行動を書いてください。\n"
+        "前提：採用するのは「清掃を週6件以上（1日3件×週2日〜）こなせるクリーナー」。この6件・3件は清掃件数であり、面接の件数ではない。"
+        "面接数や応募数など、データにない数字は作らないこと。面談で週何日・1日何件入れるかを確認する、といった見極めの観点を含めてよい。\n\n"
+        f"データ:\n{json.dumps(items, ensure_ascii=False)}"
     )
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -290,47 +290,43 @@ def generate_comments(areas_data):
     text = resp.json()["choices"][0]["message"]["content"]
     comments = {}
     for line in text.strip().split("\n"):
+        line = line.strip().lstrip("-•*").strip()
         if ":" in line:
-            parts = line.split(":", 1)
-            area = parts[0].strip().strip("*").strip("・").strip()
-            comments[area] = parts[1].strip()
+            key, val = line.split(":", 1)
+            comments[key.strip().strip("*")] = val.strip()
     return comments
 
 
-def build_report(data_3029, area_metrics, optimistic_val, pipeline_props):
+def _fmt_md(d):
+    return f"{d.month}/{d.day}"
+
+
+def build_report(data_3029, area_metrics, pipeline_props):
     cutoff = two_month_end()
-    pipeline_by_area = build_pipeline_by_area(pipeline_props, area_metrics, optimistic_val, cutoff)
+    by_month = build_pipeline_by_month(pipeline_props, area_metrics, cutoff)
 
     existing_by_area = {}
     for r in data_3029:
         area = r.get("エリア", "")
         pref = r.get("都道府県", "")
-        if area and pref:
-            existing_by_area[(pref, area)] = int(r.get("既存採用目安", 0) or 0)
+        n = int(r.get("既存採用目安", 0) or 0)
+        if area and pref and n > 0:
+            existing_by_area[(pref, area)] = n
 
-    # 既存採用目安が0かつパイプラインもないエリアは除外（エリア名変更後の孤立エントリ対策）
-    all_keys = {
-        k for k in set(existing_by_area.keys()) | set(pipeline_by_area.keys())
-        if existing_by_area.get(k, 0) > 0 or k in pipeline_by_area
-    }
+    months = sorted(by_month.keys())
 
-    def area_total(key):
-        return existing_by_area.get(key, 0) + pipeline_by_area.get(key, {}).get("p_cur", 0)
-
-    sorted_keys = sorted(all_keys, key=lambda k: -area_total(k))
-
-    lm_input = []
-    for key in sorted_keys:
-        pref, area = key
-        pm = pipeline_by_area.get(key, {})
-        if area_total(key) > 0 and pm:
-            nearest = min((p["opening"] for p in pm["props"]), default=None)
+    # コメント生成用の入力（ID付き）
+    lm_input, id_map = [], {}
+    for (y, m) in months:
+        for (pref, area), v in by_month[(y, m)].items():
+            cid = f"A{len(lm_input) + 1}"
+            id_map[(y, m, pref, area)] = cid
             lm_input.append({
+                "id": cid,
                 "エリア": area,
-                "新規採用目安_現行": pm["p_cur"],
-                "新規採用目安_中間値": pm["p_mid"],
-                f"新規採用目安_{optimistic_val}件": pm["p_25"],
-                "開業月": nearest.strftime("%Y年%m月") if nearest else "",
+                "開業月": f"{y}年{m}月",
+                "採用目標人数": v["hires"],
+                "採用期限まで残り日数": _days_left(v["deadline"]),
             })
     comments = generate_comments(lm_input)
 
@@ -338,102 +334,71 @@ def build_report(data_3029, area_metrics, optimistic_val, pipeline_props):
     cutoff_str = f"{cutoff.year}年{cutoff.month}月末"
     header = (
         f":bar_chart: *クリーナー採用予測レポート｜{today_str}*\n"
-        f"_集計期間：直近12ヶ月 ／ パイプライン：〜{cutoff_str}の開業予定物件を含む（2ヶ月先末まで）_\n"
-        "_ダッシュボード：https://redash.unito.me/dashboard/-_11_\n"
+        f"_対象：〜{cutoff_str}の開業予定物件 ／ ダッシュボード：https://redash.unito.me/dashboard/-_11_\n"
         "\n"
-        "> :bulb: *3パターンの見方*\n"
-        f"> • *現行*：エリア平均CL生産性（フロア{FLOOR_PER_CL}件/人/月）ベース。保守的な上限値。\n"
-        f"> • *中間値*：現行と{optimistic_val}件/人の平均。現実的な目標値として活用可。\n"
-        f"> • *{optimistic_val}件/人*：月{optimistic_val}件こなせる想定の楽観値。生産性目標達成時の必要人数。\n"
-        "\n"
-        ":dart: *エリア別 採用目安（優先度順）*"
+        "> :bulb: *採用目標の前提*\n"
+        f"> • 週6件以上（1日3件×週2日〜）入れる人を採用 → 1人あたり月{TARGET_PER_CL}件で計算\n"
+        f"> • 採用期限 = そのエリア・月で最も早い開業日の{HIRE_LEAD_DAYS}日前（応募〜稼働3〜5日＋研修）\n"
+        "> • :red_circle: 期限まで14日以内 or 5人以上　:large_yellow_circle: 3〜4人　:large_green_circle: 1〜2人"
     )
 
-    sections = []
-    summary_rows = []
-
-    for key in sorted_keys:
-        pref, area = key
-        ex = existing_by_area.get(key, 0)
-        pm = pipeline_by_area.get(key, {})
-        total = area_total(key)
-
-        p_cur = pm.get("p_cur", 0)
-        p_mid = pm.get("p_mid", 0)
-        p_25 = pm.get("p_25", 0)
-        props = pm.get("props", [])
-        cop = pm.get("cop")
-
-        if total == 0 and not props:
-            sections.append(f":information_source: *{area}（{pref}）｜0人*（既存CLで対応可能）")
-            continue
-
-        if not props:
-            emoji = priority_emoji(ex, None)
-            sections.append(f"{emoji} *{area}（{pref}）｜既存のみ {ex}人*")
-            summary_rows.append({
-                "エリア": area, "既存": ex,
-                "新規現行": 0, "新規中間": 0, "新規25": 0,
-                "合計現行": ex, "合計中間": ex, "合計25": ex,
-            })
-            continue
-
-        nearest = min((p["opening"] for p in props), default=None)
-        urgency = urgency_label(nearest)
-        emoji = priority_emoji(total, urgency)
-
-        lines = [f"{emoji} *{area}（{pref}）*" + (f" :warning: _{urgency}_" if urgency else "")]
-        if ex > 0:
-            lines.append(f"既存：{ex}人")
-        lines.append(f"新規追加　｜　現行：*{p_cur}人*　中間値：*{p_mid}人*　{optimistic_val}件/人：*{p_25}人*")
-
-        for p in props:
-            month = f"{p['opening'].year}年{p['opening'].month}月"
-            co = int(p["rooms"] * (cop or 0))
-            co_str = f"・月間CO +{co}件" if co > 0 else ""
-            ptype = p.get("type", "賃貸")
-            if ptype == "賃貸開業済み・宿泊":
-                type_label = "（賃貸開業済み・宿泊）"
-            elif ptype == "宿泊":
-                type_label = "（宿泊）"
+    parts = [header]
+    for (y, m) in months:
+        rows = by_month[(y, m)]
+        month_total = sum(v["hires"] for v in rows.values())
+        sec = [f":calendar: *{y}年{m}月開業分｜採用目標 {month_total}人*"]
+        for (pref, area), v in sorted(rows.items(), key=lambda kv: (kv[1]["deadline"], -kv[1]["hires"])):
+            days_left = _days_left(v["deadline"])
+            if days_left < 0:
+                dl = f"期限 {_fmt_md(v['deadline'])}（:warning: 超過）"
             else:
-                type_label = ""
-            lines.append(f":round_pushpin: 新規物件：{p['name']}{type_label}（{p['rooms']}室・{month}開業{co_str}）")
+                dl = f"期限 {_fmt_md(v['deadline'])}（あと{days_left}日）"
+            emoji = priority_emoji(v["hires"], v["deadline"])
+            lines = [f"{emoji} *{area}（{pref}）｜{v['hires']}人*　{dl}"]
+            for p in v["props"]:
+                ptype = p.get("type", "賃貸")
+                type_label = {"賃貸開業済み・宿泊": "（賃貸開業済み・宿泊）", "宿泊": "（宿泊）"}.get(ptype, "")
+                co_str = f"・月間CO +{int(p['co'])}件" if p["co"] > 0 else ""
+                lines.append(
+                    f"　:round_pushpin: {p['name']}{type_label}（{p['rooms']}室・{_fmt_md(p['opening'])}開業{co_str}）"
+                )
+            comment = comments.get(id_map[(y, m, pref, area)], "")
+            if comment:
+                lines.append(f"　:bulb: {comment}")
+            sec.append("\n".join(lines))
+        parts.append("\n\n".join(sec))
 
-        comment = comments.get(area, "")
-        if comment:
-            lines.append(f":bulb: {comment}")
+    if existing_by_area:
+        ex_lines = [":recycle: *既存エリアの補充（開業とは別）*"]
+        for (pref, area), n in sorted(existing_by_area.items(), key=lambda kv: -kv[1]):
+            ex_lines.append(f"• {area}（{pref}）｜{n}人")
+        parts.append("\n".join(ex_lines))
 
-        sections.append("\n".join(lines))
-        summary_rows.append({
-            "エリア": area, "既存": ex,
-            "新規現行": p_cur, "新規中間": p_mid, "新規25": p_25,
-            "合計現行": ex + p_cur, "合計中間": ex + p_mid, "合計25": ex + p_25,
-        })
-
-    table_lines = [":pushpin: *サマリー*"]
-    table_lines.append(
-        f"エリア\t既存\t新規（現行）\t新規（中間値）\t新規（{optimistic_val}件/人）"
-        f"\t合計（現行）\t合計（中間値）\t合計（{optimistic_val}件/人）"
+    # サマリー：エリア × 開業月
+    areas = sorted(
+        {k for mo in months for k in by_month[mo]} | set(existing_by_area),
+        key=lambda k: -(sum(by_month[mo].get(k, {}).get("hires", 0) for mo in months) + existing_by_area.get(k, 0)),
     )
-    totals = {k: 0 for k in ["既存", "新規現行", "新規中間", "新規25", "合計現行", "合計中間", "合計25"]}
-    for row in summary_rows:
-        table_lines.append(
-            f"{row['エリア']}\t{row['既存']}人\t{row['新規現行']}人\t{row['新規中間']}人\t{row['新規25']}人"
-            f"\t{row['合計現行']}人\t{row['合計中間']}人\t{row['合計25']}人"
-        )
-        for k in totals:
-            totals[k] += row.get(k, 0)
-    table_lines.append(
-        f"合計\t{totals['既存']}人\t{totals['新規現行']}人\t{totals['新規中間']}人\t{totals['新規25']}人"
-        f"\t{totals['合計現行']}人\t{totals['合計中間']}人\t{totals['合計25']}人"
+    month_cols = [f"{m}月開業" for (_, m) in months]
+    table = [":pushpin: *サマリー（採用目標・人）*", "エリア\t" + "\t".join(month_cols) + "\t既存補充\t合計"]
+    col_tot = [0] * len(months)
+    ex_tot = grand = ref_total = 0
+    for key in areas:
+        vals = [by_month[mo].get(key, {}).get("hires", 0) for mo in months]
+        ex = existing_by_area.get(key, 0)
+        tot = sum(vals) + ex
+        col_tot = [a + b for a, b in zip(col_tot, vals)]
+        ex_tot += ex
+        grand += tot
+        ref_total += sum(by_month[mo].get(key, {}).get("hires_ref", 0) for mo in months) + ex
+        table.append(f"{key[1]}\t" + "\t".join(str(x) for x in vals) + f"\t{ex}\t{tot}")
+    table.append("合計\t" + "\t".join(str(x) for x in col_tot) + f"\t{ex_tot}\t{grand}")
+    table.append(
+        f"_※ 採用目標 = 月間CO予測 ÷ {TARGET_PER_CL}件（切り上げ）。"
+        f"参考：平均的な副業CL（月{FLOOR_PER_CL}件）で採った場合は合計{ref_total}人。_"
     )
-    table_lines.append(
-        f"_※ 中間値 = (現行 + {optimistic_val}件/人) ÷ 2 の切り上げ。"
-        "新規開業物件の月間CO予測をもとに算出。楽観値は直近12ヶ月の上位25%平均（動的）。_"
-    )
+    parts.append("\n".join(table))
 
-    parts = [header] + sections + ["\n".join(table_lines)]
     return "\n\n".join(parts)
 
 
@@ -457,11 +422,10 @@ if __name__ == "__main__":
     print("Fetching Redash data...")
     data_3029 = fetch_query_results(3029)
     data_3023 = fetch_query_results(3023)
-    area_metrics, optimistic_val = compute_area_metrics(data_3023)
-    print(f"  楽観値: {optimistic_val}件/人")
+    area_metrics, _ = compute_area_metrics(data_3023)
 
     print("Building report...")
-    report = build_report(data_3029, area_metrics, optimistic_val, pipeline_props)
+    report = build_report(data_3029, area_metrics, pipeline_props)
     print(report)
 
     print("Sending to Slack...")
